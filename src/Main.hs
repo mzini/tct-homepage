@@ -9,8 +9,9 @@ import           Hakyll
 import qualified Text.Pandoc as Pandoc
 import System.Directory (getDirectoryContents)
 import qualified Tct.Core.Main as TcT
+import qualified Tct.Core.Data as TcT
 import Tct.Hoca.Config (hocaConfig)
-
+import Data.Maybe (fromMaybe,isNothing)
 
 config :: Configuration
 config = defaultConfiguration
@@ -32,42 +33,100 @@ withDefaultPHP ctx =
 ----------------------------------------------------------------------
 -- tools
 
-data Config a = Config { tctConfig   :: TcT.TctConfig a
-                       , modeName    :: String
-                       , defaultInput :: FilePath }
+data Tool a = Tool { tctConfig   :: TcT.TctConfig a
+                   , toolName    :: String
+                   , defaultInput :: FilePath }
+              
 
-
-hoca = Config { tctConfig = hocaConfig
-              , modeName = "HoCA"
-              , defaultInput = "rev-dl.fp" }
+hoca = Tool { tctConfig = hocaConfig, toolName = "HoCA", defaultInput = "rev-dl.fp" }
 
 ----------------------------------------------------------------------
 -- examples
 
-exampleDir :: Config a -> FilePath
-exampleDir cfg = "examples" </> modeName cfg
+exampleDir :: Tool a -> FilePath
+exampleDir tool = "examples" </> toolName tool
 
-getExamples :: Config a -> Compiler [Item CopyFile]
-getExamples cfg = loadAll (fromString (exampleDir cfg </> "*"))
+getExamples :: Tool a -> Compiler [Item CopyFile]
+getExamples tool = loadAll (fromString (exampleDir tool </> "*"))
 
-exampleContext :: Config a -> Context b
-exampleContext cfg = field "name" (\ item -> return $ takeBaseName $ toFilePath $ itemIdentifier item)
-                 <> field "filepath" (\ item -> return $ exampleDir cfg </> toFilePath (itemIdentifier item))
+exampleCtx :: Context b
+exampleCtx =
+  field "name" (\ item -> return $ takeBaseName $ toFilePath $ itemIdentifier item)
+  <> field "filepath" (\ item -> return $ toFilePath (itemIdentifier item))
+
+
+----------------------------------------------------------------------
+-- strategies
+
+strategyDeclarations :: Tool a -> [TcT.StrategyDeclaration a a]
+strategyDeclarations tool = defaultDecl : TcT.strategies (tctConfig tool) where
+  defaultDecl = TcT.SD (TcT.strategy "default" () (TcT.defaultStrategy (tctConfig tool)))
+
+-- strategyId :: Tool a -> TcT.StrategyDeclaration a a -> Identifier
+-- strategyId tool (TcT.SD sd) = fromFilePath (toolName tool </> TcT.declName sd)
+
+-- strategyIds :: Tool a -> [Identifier]
+-- strategyIds tool = strategyId tool `map` strategyDeclarations tool
+
+getStrategies :: Tool a -> Compiler [Item (TcT.StrategyDeclaration a a)]
+getStrategies tool = return [Item (strategyId decl) decl | decl <- strategyDeclarations tool] where
+  strategyId (TcT.SD sd) = fromFilePath ("strategy" </> TcT.declName sd)
+
+-- data ArgType = ArgString | ArgStringOpt | ArgNat | ArgNatOpt
+
+type ArgInfo = (String,String,[String],Maybe String)
+
+argInfoCtx :: Context ArgInfo 
+argInfoCtx =
+  field "name" (return . name . itemBody)
+  <> field "type" (return . tpe . itemBody)
+  <> field "help" (return . help . itemBody)
+  <> field "default" (return . def . itemBody)
+  <> boolField "isOptional" (opt . itemBody)
+  where
+    name (n,_,_,_) = n
+    tpe  (_,t,_,_) = t
+    help (_,_,hlp,_) = concat hlp
+    def  (_,_,_,md) = fromMaybe "" md
+    opt  (_,_,_,md) = isNothing md
+
+
+getArgInfos :: Item (TcT.StrategyDeclaration a a) -> Compiler [Item ArgInfo]
+getArgInfos = return . toItem . argsInfo . itemBody where
+  argsInfo (TcT.SD decl) = (TcT.declName decl, TcT.argsInfo (TcT.declArgs decl))
+  toItem (declName,as) = [Item (fromFilePath ("option" </>  declName </> name)) a | a@(name,_,_,_) <- as ]
+
+
+strategyCtx :: Context (TcT.StrategyDeclaration a a)
+strategyCtx =
+  field "id" (return . toFilePath . itemIdentifier)
+  <> field "name" (return . name . itemBody)
+  <> listFieldWith "options" argInfoCtx getArgInfos
+  where name (TcT.SD sd) = TcT.declName sd
+
+
+----------------------------------------------------------------------
+-- tool
+
+toolContext :: Tool a -> Context String
+toolContext tool = 
+  titleField (toolName tool ++ " web-interface")
+  <> constField "defaultInput" (exampleDir tool </> defaultInput tool)
+  <> listField  "examples"     exampleCtx (getExamples tool)
+  <> listField  "strategies"   strategyCtx (getStrategies tool)
+  <> defaultContext
 
 ----------------------------------------------------------------------
 -- main rule for webif.php
 
-webIF :: Config a -> Rules ()
-webIF cfg = version name $ do
+webIF :: Tool a -> Rules ()
+webIF tool = version name $ do
   route (constRoute name)
   compile $ do
     getResourceBody >>= applyAsTemplate ctx >>= withDefaultPHP ctx
     where
-      ctx = titleField (name ++ " web-interface")
-            <> constField "defaultInput" (defaultInput cfg)
-            <> listField "examples" (exampleContext cfg) (getExamples cfg)
-            <> defaultContext
-      name = modeName cfg ++ ".php"
+      ctx = toolContext tool
+      name = toolName tool ++ ".php"
 
 ----------------------------------------------------------------------
 -- main
