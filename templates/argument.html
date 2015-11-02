@@ -1,0 +1,9 @@
+argument id: <pre>$id$</pre> (
+  $if(isOptional)$ OPTIONAL $endif$
+  $if(isBool)$ BOOL $endif$
+  $if(isNat)$ NAT $endif$
+  $if(isSimple)$ SIMPLE $endif$)
+  $if(isStrategy)$ 
+    $partial("templates/strategy-list.html")$
+  $endif$
+

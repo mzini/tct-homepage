@@ -22,16 +22,9 @@ if (get_field('exampleList','none') !== 'none' ) {
 $$problem = file_get_contents($$inputFile);
 
 print_r($$_POST);   
-?>
+   ?>
 
-<script type="text/javascript">
-  function update_strategy_view(theID) {
-    var os = document.getElementById('strategy-options').childNodes;
-    for (i in os) {
-      if (os[i].id) { os[i].style.display = os[i].id == theID + "-options" ? 'block' : 'none'; }
-    }
-  }
-</script>  
+<script src="javascript/webif.js"></script> 
 
 <div class='webif'>
   <form name="runForm" enctype="multipart/form-data" action="#output" method="POST">
@@ -52,33 +45,7 @@ print_r($$_POST);
       </div>
     </div>
     
-    <div class='strategy-select'>
-      <span class="head">Strategy</span>
-      <div class='strategy-list'>
-	$for(strategies)$
-	<span class='strategy'>
-	  <input id='$id$' type='radio' name='thestrategy' value='$id$'
-		 onchange="update_strategy_view('$id$');"
-		  <?php if (field_set_as('thestrategy','$id$')) {print 'checked';}; ?>/>
-	  $name$
-	</span>
-	$endfor$
-      </div>
-      <div class='strategy-options' id='strategy-options'>
-	$for(strategies)$
-	<div id='$id$-options' style='display:none'>
-	  strategy: $name$<br>
-	  $for(options)$
-	  name: <pre>$name$</pre> <br>
-	  type: <pre><?php echo htmlspecialchars('$type$'); ?></pre> <br>
-	  help: <pre>$help$</pre> <br>
-	  default <pre>$default$</pre> <br>
-	  $if(isOptional)$ optional $endif$<br><br>
-	  $endfor$
-	  <br>
-	</div>
-	$endfor$
-      </div>
-    </div>
+    $partial("templates/strategy-list.html")$
+    
   </form>
 </div>

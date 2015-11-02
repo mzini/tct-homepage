@@ -1,0 +1,21 @@
+<div class='strategy-select'>
+  <span class="head">Strategy</span>
+  <div class="strategy-list">
+    $for(strategies)$
+    <span class="strategy">
+      <input type="radio" name="$parent-id$" value="$id$"
+	     onchange="update_strategy_view('$parent-id$','$id$');"
+	     <?php if (field_set_as("$parent-id$","$id$")) {print "checked";}; ?>/>
+      $name$
+    </span>
+    $endfor$
+  </div>
+  <div id="$id$-options-list">
+    $for(strategies)$
+    <div id="$id$-options" class="strategy-options"
+	 <?php if (!field_set_as("$parent-id$","$id$")) {print 'style="display:none"';}; ?>>
+      $partial("templates/strategy.html")$
+    </div>
+    $endfor$
+  </div>
+</div>

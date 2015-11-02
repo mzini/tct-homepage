@@ -1,22 +1,23 @@
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns #-}
 module Main where
 
-import           Control.Monad ((>=>), void,forM, msum, filterM)
+import           Control.Monad ((>=>), void,forM, msum, filterM,forM_)
 import           Data.Monoid ((<>))
 import Data.String (fromString)
-import System.FilePath.Posix ((</>),takeBaseName)
+import System.FilePath.Posix ((</>),takeBaseName,takeDirectory)
 import           Hakyll
 import qualified Text.Pandoc as Pandoc
 import System.Directory (getDirectoryContents)
 import qualified Tct.Core.Main as TcT
 import qualified Tct.Core.Data as TcT
-import Tct.Hoca.Config (hocaConfig)
 import Data.Maybe (fromMaybe,isNothing)
+import Data.Typeable
 
-config :: Configuration
-config = defaultConfiguration
+import Tools
 
-----------------------------------------------------------------------
 -- utils
 
 withDefault :: Context String -> Item String -> Compiler (Item String)
@@ -30,15 +31,13 @@ withDefaultPHP ctx =
   withDefault ctx
   >=> loadAndApplyTemplate "templates/php_session.php" ctx
 
-----------------------------------------------------------------------
--- tools
 
-data Tool a = Tool { tctConfig   :: TcT.TctConfig a
-                   , toolName    :: String
-                   , defaultInput :: FilePath }
-              
+idField = field "id" (return . toFilePath . itemIdentifier)
 
-hoca = Tool { tctConfig = hocaConfig, toolName = "HoCA", defaultInput = "rev-dl.fp" }
+parentIdField = field "parent-id" (return . takeDirectory . toFilePath . itemIdentifier)
+
+(</+>) :: Item a -> String -> Identifier
+i </+> n = fromFilePath (toFilePath (itemIdentifier i) </> n)
 
 ----------------------------------------------------------------------
 -- examples
@@ -56,61 +55,101 @@ exampleCtx =
 
 
 ----------------------------------------------------------------------
--- strategies
+-- arguments and strategies
 
-strategyDeclarations :: Tool a -> [TcT.StrategyDeclaration a a]
-strategyDeclarations tool = defaultDecl : TcT.strategies (tctConfig tool) where
+data SomeSD where
+  SomeSD :: TcT.StrategyDeclaration i o -> SomeSD
+
+argMeta :: TcT.SomeArgument -> TcT.ArgMeta
+argMeta (TcT.SomeArgument a) = TcT.argMeta a
+
+argName :: TcT.SomeArgument -> String
+argName (TcT.SomeArgument a) = TcT.argName a
+
+argIsOptional :: TcT.SomeArgument -> Bool
+argIsOptional (TcT.SomeArgument TcT.OptArg {}) = True
+argIsOptional _ = False
+
+baseArg :: TcT.SomeArgument -> TcT.SomeArgument
+baseArg (TcT.SomeArgument (TcT.OptArg a _)) = baseArg (TcT.SomeArgument a)
+baseArg (TcT.SomeArgument (TcT.SomeArg a)) = baseArg (TcT.SomeArgument a)
+baseArg a = a
+
+argIsStrategy :: TcT.SomeArgument -> Bool
+argIsStrategy a =
+  case baseArg a of
+  TcT.SomeArgument TcT.StrategyArg{} -> True
+  _ -> False
+
+argIsSimple :: TcT.SomeArgument -> Bool
+argIsSimple a =
+  case baseArg a of
+  TcT.SomeArgument TcT.SimpleArg{} -> True
+  _ -> False
+
+argDomain :: TcT.SomeArgument -> String
+argDomain (baseArg -> TcT.SomeArgument a) = TcT.argDomain a
+  
+argIsBool :: TcT.SomeArgument -> Bool
+argIsBool a = argDomain a == "bool"
+
+argIsNat :: TcT.SomeArgument -> Bool
+argIsNat a = argDomain a == "nat"
+
+getArgStrategies :: Item TcT.SomeArgument -> Compiler [Item SomeSD]
+getArgStrategies i = return $ 
+  case baseArg (itemBody i) of
+    TcT.SomeArgument (TcT.StrategyArg _ decls) -> [Item (i </+> TcT.declName d') (SomeSD d) | d@(TcT.SD d') <- decls]
+    _ -> []
+  
+
+argCtx :: Context TcT.SomeArgument 
+argCtx = field' "name" argName
+         <> idField
+         <> field' "help" (unlines . TcT.argHelp_ . argMeta)
+         <> boolField' "isOptional" argIsOptional
+         <> boolField' "isStrategy" argIsStrategy
+         <> boolField' "isSimple" argIsSimple
+         <> boolField' "isBool" argIsBool
+         <> boolField' "isNat" argIsNat
+         <> listFieldWith "strategies" strategyCtx getArgStrategies
+  where
+    field' n f = field n (return . f . itemBody)
+    boolField' n f = boolField n (f . itemBody)
+  
+getArgs :: Item SomeSD -> Compiler [Item TcT.SomeArgument]
+getArgs i = return [ Item (i </+> argName a) a | a <- as ]
+  where as = case itemBody i of {SomeSD (TcT.SD decl) -> TcT.toArgList (TcT.declArgs decl)}
+  -- return . toItem . argsInfo . itemBody where
+  -- argsInfo (SomeSD (TcT.SD decl)) = (TcT.declName decl, )
+  -- toItem (declName,as) = [Item (fromFilePath (toFilePath (itemId "option" </>  declName </> argName a)) a | a <- as ]
+
+
+strategyDeclarations :: TcT.Declared a a => Tool a -> [TcT.StrategyDeclaration a a]
+strategyDeclarations tool =  defaultDecl : TcT.decls where
   defaultDecl = TcT.SD (TcT.strategy "default" () (TcT.defaultStrategy (tctConfig tool)))
 
--- strategyId :: Tool a -> TcT.StrategyDeclaration a a -> Identifier
--- strategyId tool (TcT.SD sd) = fromFilePath (toolName tool </> TcT.declName sd)
-
--- strategyIds :: Tool a -> [Identifier]
--- strategyIds tool = strategyId tool `map` strategyDeclarations tool
-
-getStrategies :: Tool a -> Compiler [Item (TcT.StrategyDeclaration a a)]
-getStrategies tool = return [Item (strategyId decl) decl | decl <- strategyDeclarations tool] where
-  strategyId (TcT.SD sd) = fromFilePath ("strategy" </> TcT.declName sd)
-
--- data ArgType = ArgString | ArgStringOpt | ArgNat | ArgNatOpt
-
-type ArgInfo = (String,String,[String],Maybe String)
-
-argInfoCtx :: Context ArgInfo 
-argInfoCtx =
-  field "name" (return . name . itemBody)
-  <> field "type" (return . tpe . itemBody)
-  <> field "help" (return . help . itemBody)
-  <> field "default" (return . def . itemBody)
-  <> boolField "isOptional" (opt . itemBody)
-  where
-    name (n,_,_,_) = n
-    tpe  (_,t,_,_) = t
-    help (_,_,hlp,_) = concat hlp
-    def  (_,_,_,md) = fromMaybe "" md
-    opt  (_,_,_,md) = isNothing md
+getStrategies :: TcT.Declared a a => Tool a -> Compiler [Item SomeSD]
+getStrategies tool = return [Item (strategyId decl) (SomeSD decl) | decl <- strategyDeclarations tool] where
+  strategyId (TcT.SD sd) = fromFilePath (toolName tool </> TcT.declName sd)
 
 
-getArgInfos :: Item (TcT.StrategyDeclaration a a) -> Compiler [Item ArgInfo]
-getArgInfos = return . toItem . argsInfo . itemBody where
-  argsInfo (TcT.SD decl) = (TcT.declName decl, TcT.argsInfo (TcT.declArgs decl))
-  toItem (declName,as) = [Item (fromFilePath ("option" </>  declName </> name)) a | a@(name,_,_,_) <- as ]
-
-
-strategyCtx :: Context (TcT.StrategyDeclaration a a)
+strategyCtx :: Context SomeSD
 strategyCtx =
-  field "id" (return . toFilePath . itemIdentifier)
+  idField
+  <> parentIdField
   <> field "name" (return . name . itemBody)
-  <> listFieldWith "options" argInfoCtx getArgInfos
-  where name (TcT.SD sd) = TcT.declName sd
+  <> listFieldWith "argument" argCtx getArgs
+  where name (SomeSD (TcT.SD sd)) = TcT.declName sd
 
 
 ----------------------------------------------------------------------
 -- tool
 
-toolContext :: Tool a -> Context String
+toolContext :: TcT.Declared a a => Tool a -> Context String
 toolContext tool = 
   titleField (toolName tool ++ " web-interface")
+  <> constField "id" (toolName tool)
   <> constField "defaultInput" (exampleDir tool </> defaultInput tool)
   <> listField  "examples"     exampleCtx (getExamples tool)
   <> listField  "strategies"   strategyCtx (getStrategies tool)
@@ -119,7 +158,7 @@ toolContext tool =
 ----------------------------------------------------------------------
 -- main rule for webif.php
 
-webIF :: Tool a -> Rules ()
+webIF :: TcT.Declared a a => Tool a -> Rules ()
 webIF tool = version name $ do
   route (constRoute name)
   compile $ do
@@ -132,13 +171,17 @@ webIF tool = version name $ do
 -- main
 
 main :: IO ()
-main = hakyllWith config $ do
+main = hakyllWith defaultConfiguration $ do
   
     match "javascript/*" $ route idRoute
 
     match "css/*" $ do
       route idRoute
       compile compressCssCompiler
+      
+    match "javascript/*" $ do
+      route idRoute
+      compile copyFileCompiler
 
     match "examples/*/*" $ do
       route idRoute
@@ -150,4 +193,4 @@ main = hakyllWith config $ do
         route idRoute
         compile $ pandocCompiler >>= withDefault defaultContext
 
-    match "webif.php" $ webIF hoca
+    forM_ tools $ \ (SomeTool tool) -> match "webif.php" (webIF tool)
